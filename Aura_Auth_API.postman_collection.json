@@ -1,0 +1,233 @@
+{
+  "info": {
+    "_postman_id": "c1f1f1d0-1c1a-4b1a-9f1c-1f1c1f1d01c1",
+    "name": "Aura Auth & Admin API",
+    "description": "Postman Collection for Aura SVG Studio Authentication and Admin Backend",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Login User",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"customer@example.com\",\n  \"password\": \"password123\",\n  \"machineId\": \"machine-uuid-123\",\n  \"deviceName\": \"Desktop PC\",\n  \"platform\": \"Windows\",\n  \"osVersion\": \"11\",\n  \"machineName\": \"WIN-ABCDEF\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/auth/login", "host": ["{{baseUrl}}"], "path": ["api", "auth", "login"] }
+          }
+        },
+        {
+          "name": "Check License",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{jwtToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"machineId\": \"machine-uuid-123\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/license/check", "host": ["{{baseUrl}}"], "path": ["api", "license", "check"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "User",
+      "item": [
+        {
+          "name": "Register Device",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{jwtToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"deviceId\": \"machine-uuid-456\",\n  \"deviceName\": \"Laptop\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/device/register", "host": ["{{baseUrl}}"], "path": ["api", "device", "register"] }
+          }
+        },
+        {
+          "name": "Subscription Status",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{jwtToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/subscription/status", "host": ["{{baseUrl}}"], "path": ["api", "subscription", "status"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Admin",
+      "item": [
+        {
+          "name": "Dashboard Stats",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/admin/dashboard", "host": ["{{baseUrl}}"], "path": ["api", "admin", "dashboard"] }
+          }
+        },
+        {
+          "name": "Get Users",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/admin/users?search=", "host": ["{{baseUrl}}"], "path": ["api", "admin", "users"], "query": [{ "key": "search", "value": "" }] }
+          }
+        },
+        {
+          "name": "Create User",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{adminToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"John Doe\",\n  \"email\": \"john@example.com\",\n  \"maxDevices\": 2,\n  \"singleActiveSession\": true\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/admin/create-user", "host": ["{{baseUrl}}"], "path": ["api", "admin", "create-user"] }
+          }
+        },
+        {
+          "name": "Activate Subscription",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{adminToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": \"user_id_here\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/admin/activate-subscription", "host": ["{{baseUrl}}"], "path": ["api", "admin", "activate-subscription"] }
+          }
+        },
+        {
+          "name": "Extend Subscription",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{adminToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": \"user_id_here\",\n  \"daysToAdd\": 30\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/admin/extend-subscription", "host": ["{{baseUrl}}"], "path": ["api", "admin", "extend-subscription"] }
+          }
+        },
+        {
+          "name": "Deactivate Subscription",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{adminToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": \"user_id_here\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/admin/deactivate-subscription", "host": ["{{baseUrl}}"], "path": ["api", "admin", "deactivate-subscription"] }
+          }
+        },
+        {
+          "name": "Reset Password",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{adminToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": \"user_id_here\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/admin/reset-password", "host": ["{{baseUrl}}"], "path": ["api", "admin", "reset-password"] }
+          }
+        },
+        {
+          "name": "Change Device Limit",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{adminToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": \"user_id_here\",\n  \"limit\": 5\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/admin/change-device-limit", "host": ["{{baseUrl}}"], "path": ["api", "admin", "change-device-limit"] }
+          }
+        },
+        {
+          "name": "Reset Devices",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{adminToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": \"user_id_here\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/admin/reset-devices", "host": ["{{baseUrl}}"], "path": ["api", "admin", "reset-devices"] }
+          }
+        },
+        {
+          "name": "Delete Device",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{adminToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": \"user_id_here\",\n  \"deviceId\": \"machine-uuid-123\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/admin/delete-device", "host": ["{{baseUrl}}"], "path": ["api", "admin", "delete-device"] }
+          }
+        },
+        {
+          "name": "Delete User",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{adminToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": \"user_id_here\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/admin/delete-user", "host": ["{{baseUrl}}"], "path": ["api", "admin", "delete-user"] }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:5000", "type": "string" },
+    { "key": "jwtToken", "value": "your_jwt_token_here", "type": "string" },
+    { "key": "adminToken", "value": "your_admin_jwt_token_here", "type": "string" }
+  ]
+}
