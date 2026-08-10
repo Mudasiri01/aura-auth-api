@@ -47,12 +47,14 @@ const userSchema = new mongoose.Schema(
     },
     devices: [
       {
-        deviceId: { type: String, required: true },
-        deviceName: { type: String },
-        platform: { type: String },
-        osVersion: { type: String },
-        machineName: { type: String },
-        registeredAt: { type: Date, default: Date.now }
+        deviceId    : { type: String, required: true },
+        deviceName  : { type: String },
+        platform    : { type: String },
+        osVersion   : { type: String },
+        machineName : { type: String },
+        refreshToken: { type: String },
+        registeredAt: { type: Date, default: Date.now },
+        lastSeen    : { type: Date, default: Date.now }
       }
     ],
     isAdmin: {

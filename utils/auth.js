@@ -7,6 +7,17 @@ const generateToken = (userId, email) => {
   return jwt.sign(
     { id: userId, email },
     process.env.JWT_SECRET,
+    { expiresIn: '15m' }
+  );
+};
+
+const generateRefreshToken = (userId, email) => {
+  if (!process.env.JWT_SECRET) {
+    throw new Error('JWT_SECRET is required.');
+  }
+  return jwt.sign(
+    { id: userId, email, type: 'refresh' },
+    process.env.JWT_SECRET,
     { expiresIn: '30d' }
   );
 };
@@ -22,4 +33,4 @@ const verifyToken = (token) => {
   }
 };
 
-module.exports = { generateToken, verifyToken };
+module.exports = { generateToken, generateRefreshToken, verifyToken };

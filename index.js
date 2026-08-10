@@ -21,8 +21,16 @@ if (process.env.NODE_ENV !== 'production') {
   }
 }
 
-// Connect to database
-connectDB();
+// Connect to database (cached for serverless — see config/db.js)
+// We call it here so the first warm-up happens at module load time.
+// Each protected route also calls connectDB() via authMiddleware for cold starts.
+(async () => {
+  try {
+    await connectDB();
+  } catch (err) {
+    console.error('[Vercel] DB connection failed at startup:', err.message);
+  }
+})();
 
 const app = express();
 

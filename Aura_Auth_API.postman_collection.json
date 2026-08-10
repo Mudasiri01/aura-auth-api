@@ -226,7 +226,7 @@
     }
   ],
   "variable": [
-    { "key": "baseUrl", "value": "http://localhost:5000", "type": "string" },
+    { "key": "baseUrl", "value": "https://aura-auth-api-theta.vercel.app", "type": "string" },
     { "key": "jwtToken", "value": "your_jwt_token_here", "type": "string" },
     { "key": "adminToken", "value": "your_admin_jwt_token_here", "type": "string" }
   ]
