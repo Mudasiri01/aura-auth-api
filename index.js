@@ -1,77 +1,262 @@
-const express = require('express');
-const cors = require('cors');
-const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
-const dotenv = require('dotenv');
-const connectDB = require('./config/db');
-const authRoutes = require('./routes/authRoutes');
-const adminRoutes = require('./routes/adminRoutes');
-const userRoutes = require('./routes/userRoutes');
-const { errorHandler, notFound } = require('./middleware/errorMiddleware');
+const express = require("express");
+const cors = require("cors");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
+const dotenv = require("dotenv");
+const path = require("path");
 
-const path = require('path');
-// Load env vars
-if (process.env.NODE_ENV !== 'production') {
-  const fs = require('fs');
-  const envPath = path.join(__dirname, '.env');
+// ======================================================
+// LOAD ENVIRONMENT VARIABLES
+// ======================================================
+
+if (process.env.NODE_ENV !== "production") {
+  const fs = require("fs");
+
+  const envPath = path.join(__dirname, ".env");
+
   if (fs.existsSync(envPath)) {
-    dotenv.config({ path: envPath });
+    dotenv.config({
+      path: envPath,
+    });
   } else {
-    dotenv.config({ path: path.join(__dirname, '../backend/.env') }); // backward compatibility
+    dotenv.config({
+      path: path.join(__dirname, "../backend/.env"),
+    });
   }
 }
 
-// Connect to database (cached for serverless — see config/db.js)
-// We call it here so the first warm-up happens at module load time.
-// Each protected route also calls connectDB() via authMiddleware for cold starts.
-(async () => {
-  try {
-    await connectDB();
-  } catch (err) {
-    console.error('[Vercel] DB connection failed at startup:', err.message);
-  }
-})();
+// ======================================================
+// IMPORT DATABASE
+// ======================================================
+
+const connectDB = require("./config/db");
+
+// ======================================================
+// IMPORT ROUTES
+// ======================================================
+
+const authRoutes = require("./routes/authRoutes");
+const adminRoutes = require("./routes/adminRoutes");
+const userRoutes = require("./routes/userRoutes");
+
+// ======================================================
+// IMPORT ERROR HANDLERS
+// ======================================================
+
+const {
+  errorHandler,
+  notFound,
+} = require("./middleware/errorMiddleware");
+
+// ======================================================
+// CREATE EXPRESS APP
+// ======================================================
 
 const app = express();
 
-// Security Middleware
-app.use(helmet());
-app.use(cors({ origin: '*' })); // Allows Electron app to communicate
-app.use(express.json({ limit: '1mb' }));
-app.use(express.urlencoded({ extended: true }));
+// ======================================================
+// SECURITY
+// ======================================================
 
-// Rate Limiter
+app.use(
+  helmet({
+    crossOriginResourcePolicy: false,
+  })
+);
+
+// Electron application ke liye CORS
+app.use(
+  cors({
+    origin: "*",
+    methods: [
+      "GET",
+      "POST",
+      "PUT",
+      "PATCH",
+      "DELETE",
+      "OPTIONS",
+    ],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "X-Requested-With",
+    ],
+  })
+);
+
+// ======================================================
+// BODY PARSER
+// ======================================================
+
+app.use(
+  express.json({
+    limit: "1mb",
+  })
+);
+
+app.use(
+  express.urlencoded({
+    extended: true,
+  })
+);
+
+// ======================================================
+// RATE LIMITER
+// ======================================================
+
 const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per `window` (here, per 15 minutes)
-  message: 'Too many requests from this IP, please try again after 15 minutes',
-  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
-  legacyHeaders: false, // Disable the `X-RateLimit-*` headers
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+
+  message: {
+    success: false,
+    message:
+      "Too many requests from this IP. Please try again later.",
+    code: "RATE_LIMIT_EXCEEDED",
+  },
+
+  standardHeaders: true,
+  legacyHeaders: false,
 });
 
-// Apply rate limiter to all API requests
-app.use('/api/', apiLimiter);
+app.use("/api/", apiLimiter);
 
-// Routes
-app.use('/api', authRoutes);
-app.use('/api', userRoutes);
-app.use('/api/admin', adminRoutes);
+// ======================================================
+// DATABASE CONNECTION MIDDLEWARE
+// ======================================================
+//
+// IMPORTANT:
+// Har API request MongoDB connection ready hone ka wait karegi.
+// Isse ye error fix hota hai:
+//
+// Cannot call users.findOne() before initial connection
+// is complete when bufferCommands = false
+//
+// ======================================================
 
-// Health check
-app.get('/api/health', (req, res) => {
-  res.status(200).json({ status: 'OK', message: 'Auth API is running' });
+app.use("/api", async (req, res, next) => {
+  try {
+    await connectDB();
+
+    console.log(
+      `[DB] MongoDB ready → ${req.method} ${req.originalUrl}`
+    );
+
+    next();
+  } catch (error) {
+    console.error(
+      "[DB] MongoDB connection failed:",
+      error.message
+    );
+
+    return res.status(503).json({
+      success: false,
+      message:
+        "Database connection is currently unavailable. Please try again later.",
+      code: "DATABASE_CONNECTION_ERROR",
+    });
+  }
 });
 
-// Error Handling Middleware
+// ======================================================
+// HEALTH CHECK
+// ======================================================
+
+app.get("/api/health", async (req, res) => {
+  try {
+    await connectDB();
+
+    return res.status(200).json({
+      success: true,
+      status: "OK",
+      message: "Aura Auth API is running",
+      database: "connected",
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error(
+      "[HEALTH] MongoDB error:",
+      error.message
+    );
+
+    return res.status(503).json({
+      success: false,
+      status: "ERROR",
+      message: "Database is not connected",
+      database: "disconnected",
+    });
+  }
+});
+
+// ======================================================
+// ROOT ROUTE
+// ======================================================
+
+app.get("/", (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: "Aura Auth API is running",
+    health: "/api/health",
+  });
+});
+
+// ======================================================
+// AUTH ROUTES
+// ======================================================
+
+app.use("/api", authRoutes);
+
+// ======================================================
+// USER ROUTES
+// ======================================================
+
+app.use("/api", userRoutes);
+
+// ======================================================
+// ADMIN ROUTES
+// ======================================================
+
+app.use("/api/admin", adminRoutes);
+
+// ======================================================
+// 404 HANDLER
+// ======================================================
+
 app.use(notFound);
+
+// ======================================================
+// GLOBAL ERROR HANDLER
+// ======================================================
+
 app.use(errorHandler);
+
+// ======================================================
+// EXPORT APP FOR VERCEL
+// ======================================================
 
 module.exports = app;
 
-// For local testing (if not using Vercel or if running directly)
+// ======================================================
+// LOCAL DEVELOPMENT SERVER
+// ======================================================
+
 if (require.main === module) {
   const PORT = process.env.AUTH_PORT || 5000;
-  app.listen(PORT, () => {
-    console.log(`Auth API running on port ${PORT}`);
-  });
+
+  connectDB()
+    .then(() => {
+      app.listen(PORT, () => {
+        console.log(
+          `Aura Auth API running on http://localhost:${PORT}`
+        );
+      });
+    })
+    .catch((error) => {
+      console.error(
+        "Failed to connect to MongoDB:",
+        error.message
+      );
+
+      process.exit(1);
+    });
 }
