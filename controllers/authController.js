@@ -1,224 +1,767 @@
+'use strict';
+
 const User = require('../models/User');
-const { generateToken, generateRefreshToken, verifyToken } = require('../utils/auth');
+const {
+  generateToken,
+  generateRefreshToken,
+  verifyToken
+} = require('../utils/auth');
+
 const connectDB = require('../config/db');
 
-// Safe logger — prevents EPIPE crashes in packaged Electron (no terminal attached)
-const safeLog = (...args) => { try { console.log(...args); } catch (_) {} };
-const safeErr = (...args) => { try { console.error(...args); } catch (_) {} };
+// ============================================================
+// SAFE LOGGER
+// ============================================================
 
-// ─── DB connection guard ──────────────────────────────────────────────────────
-// Call this at the top of every handler that touches MongoDB.
-// If connectDB() throws (e.g. MONGO_URI missing, Atlas unreachable) the handler
-// returns a clean 503 instead of crashing with "bufferCommands = false".
+const safeLog = (...args) => {
+  try {
+    console.log(...args);
+  } catch (_) {}
+};
+
+const safeErr = (...args) => {
+  try {
+    console.error(...args);
+  } catch (_) {}
+};
+
+// ============================================================
+// DATABASE READY GUARD
+// ============================================================
+//
+// IMPORTANT:
+// No User.findOne()
+// No User.findById()
+// No user.save()
+//
+// should happen before this function succeeds.
+// ============================================================
+
 const requireDB = async (res) => {
   try {
-    await connectDB();
+    const connection = await connectDB();
+
+    if (!connection) {
+      throw new Error('MongoDB connection was not returned.');
+    }
+
+    // mongoose connection readyState:
+    // 0 = disconnected
+    // 1 = connected
+    // 2 = connecting
+    // 3 = disconnecting
+
+    const mongoose = require('mongoose');
+
+    if (mongoose.connection.readyState !== 1) {
+      throw new Error(
+        `MongoDB connection is not ready. readyState=${mongoose.connection.readyState}`
+      );
+    }
+
     return true;
-  } catch (err) {
-    safeErr('[DB] Connection error in handler:', err.message);
-    res.status(503).json({
-      success: false,
-      message: 'Database temporarily unavailable. Please try again shortly.',
-      code: 'DB_UNAVAILABLE',
-    });
+
+  } catch (error) {
+    safeErr(
+      '[DB] Connection error:',
+      error.message
+    );
+
+    if (!res.headersSent) {
+      res.status(503).json({
+        success: false,
+        message:
+          'Database temporarily unavailable. Please try again shortly.',
+        code: 'DB_UNAVAILABLE'
+      });
+    }
+
     return false;
   }
 };
 
-// @desc    Auth user & get token (Login)
-// @route   POST /api/auth/login
-// @access  Public
+// ============================================================
+// LOGIN
+// ============================================================
+//
+// POST /api/auth/login
+// Public
+// ============================================================
+
 const loginUser = async (req, res) => {
   try {
-    if (!await requireDB(res)) return;
 
-    const { email, password, machineId, deviceId, deviceName, platform, osVersion, machineName } = req.body;
+    // --------------------------------------------------------
+    // 1. GUARANTEE DATABASE CONNECTION
+    // --------------------------------------------------------
+
+    const dbReady = await requireDB(res);
+
+    if (!dbReady) {
+      return;
+    }
+
+    // --------------------------------------------------------
+    // 2. REQUEST DATA
+    // --------------------------------------------------------
+
+    const {
+      email,
+      password,
+      machineId,
+      deviceId,
+      deviceName,
+      platform,
+      osVersion,
+      machineName
+    } = req.body || {};
+
     const idToCheck = deviceId || machineId;
 
-    if (!idToCheck) {
-      return res.status(400).json({ success: false, message: 'Device ID is required', code: 'DEVICE_ID_REQUIRED' });
+    // --------------------------------------------------------
+    // 3. VALIDATION
+    // --------------------------------------------------------
+
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email and password are required',
+        code: 'CREDENTIALS_REQUIRED'
+      });
     }
 
-    const user = await User.findOne({ email });
+    if (!idToCheck) {
+      return res.status(400).json({
+        success: false,
+        message: 'Device ID is required',
+        code: 'DEVICE_ID_REQUIRED'
+      });
+    }
+
+    const normalizedEmail =
+      String(email).trim().toLowerCase();
+
+    // --------------------------------------------------------
+    // 4. FIND USER
+    //
+    // DB connection has already been awaited above.
+    // --------------------------------------------------------
+
+    const user = await User.findOne({
+      email: normalizedEmail
+    });
 
     if (!user) {
-      return res.status(401).json({ success: false, message: 'Invalid email or password', code: 'INVALID_CREDENTIALS' });
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email or password',
+        code: 'INVALID_CREDENTIALS'
+      });
     }
 
-    // Allow login even if subscription is expired/inactive, so frontend can show renewal UI
-    const isMatch = await user.matchPassword(password);
+    // --------------------------------------------------------
+    // 5. PASSWORD CHECK
+    // --------------------------------------------------------
+
+    const isMatch =
+      await user.matchPassword(password);
+
     if (!isMatch) {
-      return res.status(401).json({ success: false, message: 'Invalid email or password', code: 'INVALID_CREDENTIALS' });
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email or password',
+        code: 'INVALID_CREDENTIALS'
+      });
     }
 
-    // Handle device/machine lock logic
-    const existingDeviceIndex = user.devices.findIndex(d => d.deviceId === idToCheck);
+    // --------------------------------------------------------
+    // 6. ENSURE DEVICES ARRAY EXISTS
+    // --------------------------------------------------------
+
+    if (!Array.isArray(user.devices)) {
+      user.devices = [];
+    }
+
+    // --------------------------------------------------------
+    // 7. DEVICE LOOKUP
+    //
+    // SAME MACHINE:
+    // existingDeviceIndex !== -1
+    //
+    // Therefore:
+    // - PC restart does NOT create another device
+    // - App restart does NOT create another device
+    // - Re-login does NOT consume another slot
+    // --------------------------------------------------------
+
+    let existingDeviceIndex =
+      user.devices.findIndex(
+        (device) =>
+          device.deviceId === idToCheck
+      );
+
+    // --------------------------------------------------------
+    // 8. NEW DEVICE
+    // --------------------------------------------------------
 
     if (existingDeviceIndex === -1) {
-      // New device — check limit
-      if (user.devices.length < user.maxDevices) {
-        user.devices.push({
-          deviceId   : idToCheck,
-          deviceName : deviceName  || 'Unknown Device',
-          platform   : platform    || 'Unknown Platform',
-          osVersion  : osVersion   || 'Unknown OS',
-          machineName: machineName || 'Unknown Machine',
-        });
-      } else {
-        return res.status(403).json({ success: false, message: 'Maximum Device Limit Reached', code: 'MAX_DEVICES_REACHED' });
-      }
-    }
-    // If device already exists: do NOT push a new one — just update session info below
 
-    const token        = generateToken(user._id, user.email);
-    const refreshToken = generateRefreshToken(user._id, user.email);
+      const maxDevices =
+        Number(user.maxDevices) > 0
+          ? Number(user.maxDevices)
+          : 2;
+
+      if (user.devices.length >= maxDevices) {
+        return res.status(403).json({
+          success: false,
+          message:
+            'Maximum Device Limit Reached',
+          code: 'MAX_DEVICES_REACHED'
+        });
+      }
+
+      user.devices.push({
+        deviceId: idToCheck,
+
+        deviceName:
+          deviceName || 'Unknown Device',
+
+        platform:
+          platform || 'Unknown Platform',
+
+        osVersion:
+          osVersion || 'Unknown OS',
+
+        machineName:
+          machineName || 'Unknown Machine',
+
+        refreshToken: null,
+
+        registeredAt: new Date(),
+
+        lastSeen: new Date()
+      });
+
+      // Get index of newly created device
+      existingDeviceIndex =
+        user.devices.length - 1;
+    }
+
+    // --------------------------------------------------------
+    // 9. UPDATE DEVICE INFORMATION
+    //
+    // Important for an existing device:
+    // We DO NOT push another device.
+    // --------------------------------------------------------
+
+    const device =
+      user.devices[existingDeviceIndex];
+
+    if (deviceName) {
+      device.deviceName = deviceName;
+    }
+
+    if (platform) {
+      device.platform = platform;
+    }
+
+    if (osVersion) {
+      device.osVersion = osVersion;
+    }
+
+    if (machineName) {
+      device.machineName = machineName;
+    }
+
+    device.lastSeen = new Date();
+
+    // --------------------------------------------------------
+    // 10. GENERATE TOKENS
+    // --------------------------------------------------------
+
+    const token =
+      generateToken(
+        user._id,
+        user.email
+      );
+
+    const refreshToken =
+      generateRefreshToken(
+        user._id,
+        user.email
+      );
+
+    // --------------------------------------------------------
+    // 11. SINGLE ACTIVE SESSION
+    // --------------------------------------------------------
 
     if (user.singleActiveSession) {
       user.currentSessionToken = token;
     }
 
-    // Save refresh token to this specific device
-    const deviceIndex = user.devices.findIndex(d => d.deviceId === idToCheck);
-    if (deviceIndex !== -1) {
-      user.devices[deviceIndex].refreshToken = refreshToken;
-      user.devices[deviceIndex].lastSeen     = new Date();
-    }
+    // --------------------------------------------------------
+    // 12. SAVE REFRESH TOKEN TO SAME DEVICE
+    // --------------------------------------------------------
+
+    device.refreshToken =
+      refreshToken;
+
+    device.lastSeen =
+      new Date();
+
+    // --------------------------------------------------------
+    // 13. SAVE USER
+    // --------------------------------------------------------
 
     await user.save();
 
-    res.json({
+    // --------------------------------------------------------
+    // 14. RESPONSE
+    // --------------------------------------------------------
+
+    return res.status(200).json({
       success: true,
+
       message: 'Login successful',
+
       token,
+
       refreshToken,
+
       user: {
-        id                : user._id,
-        name              : user.name,
-        email             : user.email,
-        subscriptionStatus: user.subscriptionStatus,
-        isAdmin           : user.isAdmin,
-      },
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        subscriptionStatus:
+          user.subscriptionStatus,
+        isAdmin: user.isAdmin
+      }
     });
+
   } catch (error) {
-    safeErr('Login error:', error);
-    res.status(500).json({ success: false, message: 'The authentication server encountered an error. Please try again later.', errorDetails: error.message, code: 'INTERNAL_SERVER_ERROR' });
+
+    safeErr(
+      '[LOGIN] Error:',
+      error
+    );
+
+    if (!res.headersSent) {
+      return res.status(500).json({
+        success: false,
+        message:
+          'The authentication server encountered an error. Please try again later.',
+        code: 'INTERNAL_SERVER_ERROR'
+      });
+    }
   }
 };
 
-// @desc    Check license/machine status
-// @route   POST /api/license/check
-// @access  Private  (protect middleware runs first and calls connectDB)
+// ============================================================
+// CHECK LICENSE
+// ============================================================
+//
+// POST /api/license/check
+// Private
+// protect middleware runs before this.
+// ============================================================
+
 const checkLicense = async (req, res) => {
   try {
-    // protect middleware already called connectDB() — but call again to be safe
-    // in case the connection dropped between middleware and handler execution.
-    if (!await requireDB(res)) return;
 
-    const { machineId, deviceId } = req.body;
-    const idToCheck = deviceId || machineId;
-    const user      = req.user;
+    // --------------------------------------------------------
+    // GUARANTEE DB
+    // --------------------------------------------------------
+
+    const dbReady =
+      await requireDB(res);
+
+    if (!dbReady) {
+      return;
+    }
+
+    // --------------------------------------------------------
+    // REQUEST
+    // --------------------------------------------------------
+
+    const {
+      machineId,
+      deviceId
+    } = req.body || {};
+
+    const idToCheck =
+      deviceId || machineId;
+
+    const user =
+      req.user;
+
+    // --------------------------------------------------------
+    // VALIDATION
+    // --------------------------------------------------------
+
+    if (!idToCheck) {
+      return res.status(400).json({
+        success: false,
+        message: 'Device ID is required',
+        code: 'DEVICE_ID_REQUIRED'
+      });
+    }
 
     if (!user || !user.devices) {
-      return res.status(403).json({ success: false, message: 'Unauthorized device.', code: 'UNAUTHORIZED_DEVICE' });
+      return res.status(403).json({
+        success: false,
+        message: 'Unauthorized device.',
+        code: 'UNAUTHORIZED_DEVICE'
+      });
     }
 
-    const deviceExists = user.devices.some(d => d.deviceId === idToCheck);
+    // --------------------------------------------------------
+    // DEVICE CHECK
+    // --------------------------------------------------------
+
+    const deviceExists =
+      user.devices.some(
+        (device) =>
+          device.deviceId === idToCheck
+      );
+
     if (!deviceExists) {
-      return res.status(403).json({ success: false, message: 'Unauthorized device.', code: 'UNAUTHORIZED_DEVICE' });
+      return res.status(403).json({
+        success: false,
+        message: 'Unauthorized device.',
+        code: 'UNAUTHORIZED_DEVICE'
+      });
     }
 
-    res.json({
-      success           : true,
-      message           : 'License is valid',
-      active            : true,
-      subscriptionStatus: user.subscriptionStatus,
+    // --------------------------------------------------------
+    // LICENSE RESPONSE
+    // --------------------------------------------------------
+
+    return res.status(200).json({
+      success: true,
+
+      message: 'License is valid',
+
+      active: true,
+
+      subscriptionStatus:
+        user.subscriptionStatus
     });
+
   } catch (error) {
-    safeErr('License check error:', error);
-    res.status(500).json({ success: false, message: 'The authentication server encountered an error. Please try again later.', code: 'INTERNAL_SERVER_ERROR' });
+
+    safeErr(
+      '[LICENSE] Error:',
+      error
+    );
+
+    if (!res.headersSent) {
+      return res.status(500).json({
+        success: false,
+        message:
+          'The authentication server encountered an error. Please try again later.',
+        code: 'INTERNAL_SERVER_ERROR'
+      });
+    }
   }
 };
 
-// @desc    Refresh access token
-// @route   POST /api/auth/refresh
-// @access  Public
+// ============================================================
+// REFRESH TOKEN
+// ============================================================
+//
+// POST /api/auth/refresh
+// Public
+// ============================================================
+
 const refreshUserToken = async (req, res) => {
   try {
-    if (!await requireDB(res)) return;
 
-    const { refreshToken, machineId, deviceId } = req.body;
-    const idToCheck = deviceId || machineId;
+    // --------------------------------------------------------
+    // GUARANTEE DB
+    // --------------------------------------------------------
+
+    const dbReady =
+      await requireDB(res);
+
+    if (!dbReady) {
+      return;
+    }
+
+    // --------------------------------------------------------
+    // REQUEST
+    // --------------------------------------------------------
+
+    const {
+      refreshToken,
+      machineId,
+      deviceId
+    } = req.body || {};
+
+    const idToCheck =
+      deviceId || machineId;
+
+    // --------------------------------------------------------
+    // VALIDATION
+    // --------------------------------------------------------
 
     if (!refreshToken || !idToCheck) {
-      return res.status(400).json({ success: false, message: 'Refresh token and device ID are required', code: 'MISSING_TOKENS' });
+      return res.status(400).json({
+        success: false,
+        message:
+          'Refresh token and device ID are required',
+        code: 'MISSING_TOKENS'
+      });
     }
 
-    const decoded = verifyToken(refreshToken);
-    if (!decoded || decoded.type !== 'refresh') {
-      return res.status(401).json({ success: false, message: 'Invalid or expired refresh token', code: 'INVALID_REFRESH_TOKEN' });
+    // --------------------------------------------------------
+    // VERIFY REFRESH TOKEN
+    // --------------------------------------------------------
+
+    const decoded =
+      verifyToken(refreshToken);
+
+    if (
+      !decoded ||
+      decoded.type !== 'refresh'
+    ) {
+      return res.status(401).json({
+        success: false,
+        message:
+          'Invalid or expired refresh token',
+        code: 'INVALID_REFRESH_TOKEN'
+      });
     }
 
-    const user = await User.findById(decoded.id);
+    // --------------------------------------------------------
+    // FIND USER
+    // --------------------------------------------------------
+
+    const user =
+      await User.findById(decoded.id);
+
     if (!user) {
-      return res.status(401).json({ success: false, message: 'User not found', code: 'USER_NOT_FOUND' });
+      return res.status(401).json({
+        success: false,
+        message: 'User not found',
+        code: 'USER_NOT_FOUND'
+      });
     }
 
-    // Verify token belongs to this device
-    const device = user.devices.find(d => d.deviceId === idToCheck);
-    if (!device || device.refreshToken !== refreshToken) {
-      return res.status(401).json({ success: false, message: 'Invalid refresh token for this device', code: 'INVALID_REFRESH_TOKEN' });
+    // --------------------------------------------------------
+    // ENSURE DEVICES ARRAY
+    // --------------------------------------------------------
+
+    if (!Array.isArray(user.devices)) {
+      user.devices = [];
     }
 
-    const newToken        = generateToken(user._id, user.email);
-    const newRefreshToken = generateRefreshToken(user._id, user.email);
+    // --------------------------------------------------------
+    // FIND SAME DEVICE
+    // --------------------------------------------------------
 
-    device.refreshToken = newRefreshToken;
-    device.lastSeen     = new Date();
+    const device =
+      user.devices.find(
+        (item) =>
+          item.deviceId === idToCheck
+      );
+
+    if (!device) {
+      return res.status(401).json({
+        success: false,
+        message:
+          'This device is not registered.',
+        code: 'DEVICE_NOT_REGISTERED'
+      });
+    }
+
+    // --------------------------------------------------------
+    // VERIFY DEVICE REFRESH TOKEN
+    // --------------------------------------------------------
+
+    if (
+      !device.refreshToken ||
+      device.refreshToken !== refreshToken
+    ) {
+      return res.status(401).json({
+        success: false,
+        message:
+          'Invalid refresh token for this device',
+        code: 'INVALID_REFRESH_TOKEN'
+      });
+    }
+
+    // --------------------------------------------------------
+    // GENERATE NEW TOKENS
+    // --------------------------------------------------------
+
+    const newToken =
+      generateToken(
+        user._id,
+        user.email
+      );
+
+    const newRefreshToken =
+      generateRefreshToken(
+        user._id,
+        user.email
+      );
+
+    // --------------------------------------------------------
+    // UPDATE SAME DEVICE
+    // --------------------------------------------------------
+
+    device.refreshToken =
+      newRefreshToken;
+
+    device.lastSeen =
+      new Date();
+
+    // --------------------------------------------------------
+    // SINGLE ACTIVE SESSION
+    // --------------------------------------------------------
 
     if (user.singleActiveSession) {
-      user.currentSessionToken = newToken;
+      user.currentSessionToken =
+        newToken;
     }
+
+    // --------------------------------------------------------
+    // SAVE
+    // --------------------------------------------------------
 
     await user.save();
 
-    res.json({
-      success      : true,
-      token        : newToken,
-      refreshToken : newRefreshToken,
+    // --------------------------------------------------------
+    // RESPONSE
+    // --------------------------------------------------------
+
+    return res.status(200).json({
+      success: true,
+
+      token: newToken,
+
+      refreshToken:
+        newRefreshToken
     });
+
   } catch (error) {
-    safeErr('Refresh error:', error);
-    res.status(500).json({ success: false, message: 'The authentication server encountered an error. Please try again later.', code: 'INTERNAL_SERVER_ERROR' });
+
+    safeErr(
+      '[REFRESH] Error:',
+      error
+    );
+
+    if (!res.headersSent) {
+      return res.status(500).json({
+        success: false,
+        message:
+          'The authentication server encountered an error. Please try again later.',
+        code: 'INTERNAL_SERVER_ERROR'
+      });
+    }
   }
 };
 
-// @desc    Logout user
-// @route   POST /api/auth/logout
-// @access  Private
+// ============================================================
+// LOGOUT
+// ============================================================
+//
+// POST /api/auth/logout
+// Private
+// ============================================================
+
 const logoutUser = async (req, res) => {
   try {
-    // protect middleware already called connectDB but we guard here too
-    if (!await requireDB(res)) return;
 
-    const { machineId, deviceId } = req.body;
-    const idToCheck = deviceId || machineId;
-    const user      = req.user;
+    // --------------------------------------------------------
+    // GUARANTEE DB
+    // --------------------------------------------------------
 
-    if (user && idToCheck && user.devices) {
-      const device = user.devices.find(d => d.deviceId === idToCheck);
+    const dbReady =
+      await requireDB(res);
+
+    if (!dbReady) {
+      return;
+    }
+
+    // --------------------------------------------------------
+    // REQUEST
+    // --------------------------------------------------------
+
+    const {
+      machineId,
+      deviceId
+    } = req.body || {};
+
+    const idToCheck =
+      deviceId || machineId;
+
+    const user =
+      req.user;
+
+    // --------------------------------------------------------
+    // CLEAR REFRESH TOKEN ONLY
+    //
+    // IMPORTANT:
+    // DO NOT REMOVE DEVICE.
+    //
+    // This means logging out and logging in again
+    // on the same PC does NOT consume another slot.
+    // --------------------------------------------------------
+
+    if (
+      user &&
+      idToCheck &&
+      Array.isArray(user.devices)
+    ) {
+
+      const device =
+        user.devices.find(
+          (item) =>
+            item.deviceId === idToCheck
+        );
+
       if (device) {
+
         device.refreshToken = null;
-        // NOTE: We intentionally do NOT delete the device entry —
-        // the device slot should remain so re-logging in on the same
-        // PC does not consume another slot.
+
+        device.lastSeen =
+          new Date();
+
         await user.save();
       }
     }
-    res.json({ success: true, message: 'Logged out successfully' });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Logged out successfully'
+    });
+
   } catch (error) {
-    safeErr('Logout error:', error);
-    res.status(500).json({ success: false, message: 'The authentication server encountered an error. Please try again later.', code: 'INTERNAL_SERVER_ERROR' });
+
+    safeErr(
+      '[LOGOUT] Error:',
+      error
+    );
+
+    if (!res.headersSent) {
+      return res.status(500).json({
+        success: false,
+        message:
+          'The authentication server encountered an error. Please try again later.',
+        code: 'INTERNAL_SERVER_ERROR'
+      });
+    }
   }
 };
 
-module.exports = { loginUser, checkLicense, refreshUserToken, logoutUser };
+// ============================================================
+// EXPORTS
+// ============================================================
+
+module.exports = {
+  loginUser,
+  checkLicense,
+  refreshUserToken,
+  logoutUser
+};
