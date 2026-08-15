@@ -1,10 +1,13 @@
 {
   "version": 2,
   "rewrites": [
-    { "source": "/api/admin(.*)", "destination": "/index.js" },
-    { "source": "/api/auth(.*)", "destination": "/index.js" },
-    { "source": "/api/license(.*)", "destination": "/index.js" },
-    { "source": "/api/device(.*)", "destination": "/index.js" },
-    { "source": "/api/subscription(.*)", "destination": "/index.js" }
+    { "source": "/api/health",             "destination": "/index.js" },
+    { "source": "/api/admin(.*)",           "destination": "/index.js" },
+    { "source": "/api/auth(.*)",            "destination": "/index.js" },
+    { "source": "/api/license(.*)",         "destination": "/index.js" },
+    { "source": "/api/device(.*)",          "destination": "/index.js" },
+    { "source": "/api/subscription(.*)",    "destination": "/index.js" },
+    { "source": "/api/(.*)",               "destination": "/index.js" },
+    { "source": "/",                        "destination": "/index.js" }
   ]
 }
