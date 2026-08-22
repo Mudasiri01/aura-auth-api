@@ -1,163 +1,86 @@
-'use strict';
-
-/**
- * db.js — Bulletproof MongoDB connection for Vercel Serverless + Local Dev
- *
- * ROOT CAUSE OF THE ORIGINAL BUG:
- * ─────────────────────────────────────────────────────────────────────────
- * `bufferCommands: false` was set in mongoose.connect(), which tells Mongoose
- * to throw IMMEDIATELY if any query (findOne, findById, save…) is called
- * before the connection is fully open.
- *
- * The old code had a race condition:
- *   - cached.promise was created with chained .then() and .catch()
- *   - the outer try/catch also awaited the same promise
- *   - if the .catch() nulled out cached.promise while the outer await was
- *     still pending, state became inconsistent and queries fired too early.
- *
- * THE FIX:
- * ─────────────────────────────────────────────────────────────────────────
- * 1. Use a single `cached.promise` reference — no chained .then()/.catch().
- *    Always await it in one place only.
- * 2. Check `mongoose.connection.readyState === 1` AFTER the await — if it
- *    is not 1 we reset the cache and throw, so the next request retries.
- * 3. bufferCommands is kept false (correct for serverless) — but we
- *    guarantee no query ever runs before this function resolves.
- * 4. Mongoose global bufferCommands override is also disabled to be safe.
- */
-
 const mongoose = require('mongoose');
 
-// ──────────────────────────────────────────────────────────────────────────────
-// GLOBAL CACHE
-// Vercel hot-reloads modules between invocations inside the same Lambda
-// instance but preserves `global`. We use this to reuse an open connection.
-// ──────────────────────────────────────────────────────────────────────────────
+// Safe logger — prevents EPIPE crashes in packaged Electron
+const safeLog = (...a) => { try { console.log(...a); } catch (_) {} };
+const safeErr = (...a) => { try { console.error(...a); } catch (_) {} };
 
-if (!global.__mongoCache) {
-  global.__mongoCache = {
-    conn   : null,   // resolved mongoose instance
-    promise: null,   // in-flight connect() promise
-  };
+// ─── Persistent connection cache ──────────────────────────────────────────────
+// Works in both long-running Electron process AND Vercel serverless (warm reuse)
+let cached = global.mongoose;
+if (!cached) {
+  cached = global.mongoose = { conn: null, promise: null };
 }
 
-const cache = global.__mongoCache;
+// Wire up mongoose-level reconnect events exactly once
+if (!global.__mongooseEventsAttached) {
+  global.__mongooseEventsAttached = true;
+  mongoose.connection.on('disconnected', () => {
+    safeLog('[DB] ⚠️ MongoDB disconnected — will reconnect on next request.');
+    cached.conn    = null;
+    cached.promise = null;
+  });
+  mongoose.connection.on('reconnected', () => {
+    safeLog('[DB] ✅ MongoDB reconnected.');
+  });
+  mongoose.connection.on('error', (err) => {
+    safeErr('[DB] ❌ MongoDB connection error:', err.message);
+  });
+}
 
-// ──────────────────────────────────────────────────────────────────────────────
-// SAFE LOGGERS  (prevent EPIPE crashes in packaged Electron)
-// ──────────────────────────────────────────────────────────────────────────────
-
-const log = (...a) => { try { console.log(...a); } catch (_) {} };
-const err = (...a) => { try { console.error(...a); } catch (_) {} };
-
-// ──────────────────────────────────────────────────────────────────────────────
-// CONNECT DB
-// ──────────────────────────────────────────────────────────────────────────────
-
+/**
+ * connectDB — await before ANY Mongoose query.
+ *
+ * Throws on failure so the caller can return a proper 503 to the client
+ * instead of crashing with the confusing "bufferCommands = false" message.
+ */
 const connectDB = async () => {
-
-  // ── 1. Already have a live connection ──────────────────────────────────────
-  if (cache.conn && mongoose.connection.readyState === 1) {
-    return cache.conn;
+  // ── Already connected — reuse the cached connection ──────────────────────
+  if (cached.conn) {
+    if (mongoose.connection.readyState === 1) {
+      return cached.conn;
+    }
+    // Connection dropped — reset cache and reconnect below
+    cached.conn    = null;
+    cached.promise = null;
   }
 
-  // ── 2. Connection dropped / stale — reset so we reconnect cleanly ──────────
-  if (cache.conn && mongoose.connection.readyState !== 1) {
-    log('[DB] Connection stale (readyState=%d) — resetting cache.', mongoose.connection.readyState);
-    cache.conn    = null;
-    cache.promise = null;
-  }
-
-  // ── 3. Resolve MONGODB URI ─────────────────────────────────────────────────
-  const mongoURI =
-    process.env.MONGODB_URI ||
-    process.env.MONGO_URI;
+  // ── Resolve MONGO URI (support both env var names) ────────────────────────
+  const mongoURI = process.env.MONGODB_URI || process.env.MONGO_URI;
 
   if (!mongoURI) {
     throw new Error(
-      'MongoDB connection string is missing. ' +
-      'Set MONGODB_URI or MONGO_URI in your environment variables.'
+      '[DB] MONGO_URI environment variable is not set.'
     );
   }
 
-  // ── 4. Re-use an in-flight connect() from another concurrent request ────────
-  //      (Vercel can invoke the same Lambda for two requests simultaneously)
-  if (cache.promise) {
-    log('[DB] Waiting for in-flight connection...');
-    try {
-      cache.conn = await cache.promise;
-    } catch (connectErr) {
-      // The in-flight connect failed — clear so next request retries
-      cache.promise = null;
-      cache.conn    = null;
-      throw connectErr;
-    }
+  // ── Start a new connection (or wait for the one already in progress) ──────
+  if (!cached.promise) {
+    const opts = {
+      serverSelectionTimeoutMS : 30000,  // 30 s — gives Atlas TLS handshake time
+      connectTimeoutMS         : 30000,  // 30 s TCP connect
+      socketTimeoutMS          : 45000,  // 45 s idle socket
+      maxPoolSize              : 10,
+      retryWrites              : true,
+    };
 
-    // Double-check readyState after awaiting the shared promise
-    if (mongoose.connection.readyState !== 1) {
-      cache.promise = null;
-      cache.conn    = null;
-      throw new Error('[DB] Connection promise resolved but readyState is not 1.');
-    }
-
-    return cache.conn;
+    safeLog('[DB] Opening new MongoDB connection…');
+    cached.promise = mongoose
+      .connect(mongoURI, opts)
+      .then((m) => {
+        safeLog(`[DB] ✅ Connected: ${m.connection.host}`);
+        return m;
+      })
+      .catch((err) => {
+        safeErr(`[DB] ❌ Connection failed: ${err.message}`);
+        // Reset so the next request will attempt a fresh connection
+        cached.promise = null;
+        throw err;
+      });
   }
 
-  // ── 5. Open a NEW connection ───────────────────────────────────────────────
-  log('[DB] Opening new MongoDB connection...');
-
-  // Store the promise BEFORE awaiting so concurrent requests share it (step 4)
-  cache.promise = mongoose.connect(mongoURI, {
-    // ── Timeouts ──────────────────────────────────────────────────────────────
-    serverSelectionTimeoutMS : 10000,  // give up waiting for a server after 10 s
-    connectTimeoutMS         : 10000,  // TCP connect timeout
-    socketTimeoutMS          : 45000,  // idle socket timeout
-
-    // ── Pool ──────────────────────────────────────────────────────────────────
-    maxPoolSize : 10,
-    minPoolSize : 0,
-
-    // ── IPv4 only (avoids IPv6 issues on some cloud providers) ────────────────
-    family: 4,
-
-    // ── IMPORTANT ─────────────────────────────────────────────────────────────
-    // bufferCommands: false means Mongoose will throw immediately if a query
-    // runs before the connection is open.  We keep this intentionally so that
-    // any bug that bypasses connectDB() is caught loudly rather than silently
-    // queuing forever.
-    bufferCommands: false,
-  });
-
-  // ── 6. Await the promise — single await, no .then()/.catch() chains ─────────
-  try {
-    cache.conn = await cache.promise;
-  } catch (connectErr) {
-    err('[DB] mongoose.connect() failed:', connectErr.message);
-    cache.promise = null;
-    cache.conn    = null;
-    throw connectErr;
-  }
-
-  // ── 7. Final sanity check ──────────────────────────────────────────────────
-  if (mongoose.connection.readyState !== 1) {
-    const state = mongoose.connection.readyState;
-    cache.promise = null;
-    cache.conn    = null;
-    throw new Error(`[DB] Connection resolved but readyState=${state} (expected 1).`);
-  }
-
-  log('[DB] MongoDB is READY for queries. host=%s', mongoose.connection.host);
-  return cache.conn;
+  // Await the connection promise — throws if mongoose.connect() rejected
+  cached.conn = await cached.promise;
+  return cached.conn;
 };
-
-// ──────────────────────────────────────────────────────────────────────────────
-// MONGOOSE CONNECTION EVENTS  (informational only)
-// ──────────────────────────────────────────────────────────────────────────────
-
-mongoose.connection.on('connected',    ()  => log('[DB] Event: connected'));
-mongoose.connection.on('disconnected', ()  => log('[DB] Event: disconnected'));
-mongoose.connection.on('error',        (e) => err('[DB] Event: error —', e.message));
-
-// ──────────────────────────────────────────────────────────────────────────────
 
 module.exports = connectDB;

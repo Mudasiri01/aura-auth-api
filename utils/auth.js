@@ -7,7 +7,7 @@ const generateToken = (userId, email) => {
   return jwt.sign(
     { id: userId, email },
     process.env.JWT_SECRET,
-    { expiresIn: '15m' }
+    { expiresIn: '2h' }  // 2 hours — practical for a desktop Electron app
   );
 };
 

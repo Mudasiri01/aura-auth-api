@@ -16,13 +16,13 @@ const connectDB = require('../config/db');
 const safeLog = (...args) => {
   try {
     console.log(...args);
-  } catch (_) {}
+  } catch (_) { }
 };
 
 const safeErr = (...args) => {
   try {
     console.error(...args);
-  } catch (_) {}
+  } catch (_) { }
 };
 
 // ============================================================
@@ -39,39 +39,15 @@ const safeErr = (...args) => {
 
 const requireDB = async (res) => {
   try {
-    const connection = await connectDB();
-
-    if (!connection) {
-      throw new Error('MongoDB connection was not returned.');
-    }
-
-    // mongoose connection readyState:
-    // 0 = disconnected
-    // 1 = connected
-    // 2 = connecting
-    // 3 = disconnecting
-
-    const mongoose = require('mongoose');
-
-    if (mongoose.connection.readyState !== 1) {
-      throw new Error(
-        `MongoDB connection is not ready. readyState=${mongoose.connection.readyState}`
-      );
-    }
-
+    await connectDB();
     return true;
-
   } catch (error) {
-    safeErr(
-      '[DB] Connection error:',
-      error.message
-    );
+    safeErr('[DB] Connection error:', error.message);
 
     if (!res.headersSent) {
       res.status(503).json({
         success: false,
-        message:
-          'Database temporarily unavailable. Please try again shortly.',
+        message: 'Database temporarily unavailable. Please try again shortly.',
         code: 'DB_UNAVAILABLE'
       });
     }
@@ -159,13 +135,8 @@ const loginUser = async (req, res) => {
       });
     }
 
-    // --------------------------------------------------------
-    // 5. PASSWORD CHECK
-    // --------------------------------------------------------
-
-    const isMatch =
-      await user.matchPassword(password);
-
+    // Allow login even if subscription is expired/inactive, so frontend can show renewal UI
+    const isMatch = await user.matchPassword(password);
     if (!isMatch) {
       return res.status(401).json({
         success: false,

@@ -62,16 +62,17 @@ const protect = async (req, res, next) => {
       if (mongoUser.singleActiveSession && mongoUser.currentSessionToken !== token) {
         return res.status(401).json({
           success: false,
-          message: 'Session invalidated by login from another device',
+          message: 'Session invalidated by login from another device. Please log in again.',
           code   : 'SESSION_INVALIDATED',
         });
       }
 
       // ── Subscription/account check ────────────────────────────────────────
+      // Allow 'active' and 'trial' — block only 'inactive'
       if (mongoUser.subscriptionStatus === 'inactive') {
         return res.status(403).json({
           success: false,
-          message: 'Account is inactive. Contact Administrator.',
+          message: 'Your account is inactive. Please contact your administrator to renew your license.',
           code   : 'ACCOUNT_INACTIVE',
         });
       }
@@ -83,7 +84,7 @@ const protect = async (req, res, next) => {
       // path. Attach a minimal user object so downstream handlers can read
       // req.user.id / req.user.email, but mark it so device-limit handlers
       // know they cannot access the devices[] array.
-      safeLog('[AUTH_MIDDLEWARE] Valid token but no MongoDB user — attaching decoded payload.');
+      safeLog('[AUTH_MIDDLEWARE] Valid token but no MongoDB user \u2014 attaching decoded payload.');
       req.user = {
         _id              : decoded.id,
         id               : decoded.id,
