@@ -6,6 +6,7 @@ const {
   generateRefreshToken,
   verifyToken
 } = require('../utils/auth');
+const { signLicense } = require('../utils/crypto');
 
 const connectDB = require('../config/db');
 
@@ -28,14 +29,6 @@ const safeErr = (...args) => {
 // ============================================================
 // DATABASE READY GUARD
 // ============================================================
-//
-// IMPORTANT:
-// No User.findOne()
-// No User.findById()
-// No user.save()
-//
-// should happen before this function succeeds.
-// ============================================================
 
 const requireDB = async (res) => {
   try {
@@ -53,6 +46,98 @@ const requireDB = async (res) => {
     }
 
     return false;
+  }
+};
+
+// ============================================================
+// REGISTER
+// ============================================================
+//
+// POST /api/auth/register
+// Public
+// ============================================================
+
+const registerUser = async (req, res) => {
+  try {
+
+    // --------------------------------------------------------
+    // 1. GUARANTEE DATABASE CONNECTION
+    // --------------------------------------------------------
+
+    const dbReady = await requireDB(res);
+    if (!dbReady) return;
+
+    // --------------------------------------------------------
+    // 2. REQUEST DATA
+    // --------------------------------------------------------
+
+    const { name, email, password } = req.body || {};
+
+    // --------------------------------------------------------
+    // 3. CHECK FOR EXISTING EMAIL
+    // --------------------------------------------------------
+
+    const normalizedEmail = String(email).trim().toLowerCase();
+
+    const existingUser = await User.findOne({ email: normalizedEmail });
+    if (existingUser) {
+      return res.status(400).json({
+        success: false,
+        message: 'An account with this email address already exists.',
+        code: 'EMAIL_ALREADY_EXISTS'
+      });
+    }
+
+    // --------------------------------------------------------
+    // 4. CREATE USER
+    //
+    // Role is hardcoded to 'user' — never trust client input.
+    // Status defaults to 'active' (can log in, but subscription
+    // is 'inactive' so they can't use protected features until
+    // Admin activates their subscription).
+    // Password will be hashed by the pre-save hook in User.js.
+    // --------------------------------------------------------
+
+    const user = await User.create({
+      name: String(name).trim(),
+      email: normalizedEmail,
+      password,                         // bcrypt pre-save hook hashes this
+      role: 'user',                     // NEVER allow client to set role
+      isAdmin: false,                   // NEVER allow client to set isAdmin
+      status: 'active',
+      subscriptionStatus: 'inactive',
+      maxDevices: 2,
+    });
+
+    // --------------------------------------------------------
+    // 5. RESPONSE (do NOT return password)
+    // --------------------------------------------------------
+
+    return res.status(201).json({
+      success: true,
+      message: 'Account created successfully. You can now log in. Contact your administrator to activate your subscription.',
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        status: user.status,
+        subscriptionStatus: user.subscriptionStatus,
+        createdAt: user.createdAt
+      }
+    });
+
+  } catch (error) {
+
+    safeErr('[REGISTER] Error:', error);
+
+    if (!res.headersSent) {
+      return res.status(500).json({
+        success: false,
+        message: 'Registration failed. Please try again later.',
+        code: 'INTERNAL_SERVER_ERROR'
+      });
+    }
   }
 };
 
@@ -119,8 +204,6 @@ const loginUser = async (req, res) => {
 
     // --------------------------------------------------------
     // 4. FIND USER
-    //
-    // DB connection has already been awaited above.
     // --------------------------------------------------------
 
     const user = await User.findOne({
@@ -135,7 +218,10 @@ const loginUser = async (req, res) => {
       });
     }
 
-    // Allow login even if subscription is expired/inactive, so frontend can show renewal UI
+    // --------------------------------------------------------
+    // 5. VERIFY PASSWORD
+    // --------------------------------------------------------
+
     const isMatch = await user.matchPassword(password);
     if (!isMatch) {
       return res.status(401).json({
@@ -144,6 +230,32 @@ const loginUser = async (req, res) => {
         code: 'INVALID_CREDENTIALS'
       });
     }
+
+    // --------------------------------------------------------
+    // 5b. CHECK ACCOUNT STATUS (backend enforced)
+    //
+    // This check happens AFTER password verification to avoid
+    // leaking which accounts exist.
+    // --------------------------------------------------------
+
+    if (user.status === 'suspended') {
+      return res.status(403).json({
+        success: false,
+        message: 'Your account has been suspended. Please contact support.',
+        code: 'ACCOUNT_SUSPENDED'
+      });
+    }
+
+    if (user.status === 'disabled') {
+      return res.status(403).json({
+        success: false,
+        message: 'Your account has been disabled. Please contact support.',
+        code: 'ACCOUNT_DISABLED'
+      });
+    }
+
+    // Allow login even if subscription is expired/inactive,
+    // so the frontend can show a renewal/contact UI.
 
     // --------------------------------------------------------
     // 6. ENSURE DEVICES ARRAY EXISTS
@@ -281,13 +393,46 @@ const loginUser = async (req, res) => {
       new Date();
 
     // --------------------------------------------------------
-    // 13. SAVE USER
+    // 13. UPDATE lastLogin
+    // --------------------------------------------------------
+
+    user.lastLogin = new Date();
+
+    // --------------------------------------------------------
+    // 14. SAVE USER
     // --------------------------------------------------------
 
     await user.save();
 
     // --------------------------------------------------------
-    // 14. RESPONSE
+    // 15. GENERATE SIGNED LICENSE
+    // --------------------------------------------------------
+
+    let signedLicense = null;
+    const privateKeyRaw = process.env.LICENSE_PRIVATE_KEY;
+
+    if (privateKeyRaw) {
+      const privateKeyPem = privateKeyRaw.replace(/\\n/g, '\n');
+      
+      const licensePayload = {
+        userId: user._id,
+        email: user.email,
+        deviceId: idToCheck,
+        subscriptionStatus: user.subscriptionStatus,
+        isTrial: user.isTrial,
+        expiresAt: user.expiresAt,
+        issuedAt: new Date().toISOString()
+      };
+
+      try {
+        signedLicense = signLicense(licensePayload, privateKeyPem);
+      } catch (err) {
+        safeErr('[LOGIN] Failed to sign license:', err);
+      }
+    }
+
+    // --------------------------------------------------------
+    // 16. RESPONSE (never expose password)
     // --------------------------------------------------------
 
     return res.status(200).json({
@@ -299,10 +444,14 @@ const loginUser = async (req, res) => {
 
       refreshToken,
 
+      signedLicense,
+
       user: {
         id: user._id,
         name: user.name,
         email: user.email,
+        role: user.role,
+        status: user.status,
         subscriptionStatus:
           user.subscriptionStatus,
         isAdmin: user.isAdmin
@@ -321,6 +470,64 @@ const loginUser = async (req, res) => {
         success: false,
         message:
           'The authentication server encountered an error. Please try again later.',
+        code: 'INTERNAL_SERVER_ERROR'
+      });
+    }
+  }
+};
+
+// ============================================================
+// GET ME
+// ============================================================
+//
+// GET /api/auth/me
+// Private — requires protect middleware
+// ============================================================
+
+const getMe = async (req, res) => {
+  try {
+
+    const dbReady = await requireDB(res);
+    if (!dbReady) return;
+
+    const user = await User.findById(req.user._id).select('-password');
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+        code: 'USER_NOT_FOUND'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        status: user.status,
+        subscriptionStatus: user.subscriptionStatus,
+        subscriptionStartDate: user.subscriptionStartDate,
+        expiresAt: user.expiresAt,
+        isTrial: user.isTrial,
+        renderCount: user.renderCount,
+        trialRenderLimit: user.trialRenderLimit,
+        isAdmin: user.isAdmin,
+        lastLogin: user.lastLogin,
+        createdAt: user.createdAt
+      }
+    });
+
+  } catch (error) {
+
+    safeErr('[GET_ME] Error:', error);
+
+    if (!res.headersSent) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to retrieve user information.',
         code: 'INTERNAL_SERVER_ERROR'
       });
     }
@@ -404,6 +611,33 @@ const checkLicense = async (req, res) => {
     }
 
     // --------------------------------------------------------
+    // GENERATE SIGNED LICENSE
+    // --------------------------------------------------------
+
+    let signedLicense = null;
+    const privateKeyRaw = process.env.LICENSE_PRIVATE_KEY;
+
+    if (privateKeyRaw) {
+      const privateKeyPem = privateKeyRaw.replace(/\\n/g, '\n');
+      
+      const licensePayload = {
+        userId: user._id,
+        email: user.email,
+        deviceId: idToCheck,
+        subscriptionStatus: user.subscriptionStatus,
+        isTrial: user.isTrial,
+        expiresAt: user.expiresAt,
+        issuedAt: new Date().toISOString()
+      };
+
+      try {
+        signedLicense = signLicense(licensePayload, privateKeyPem);
+      } catch (err) {
+        safeErr('[LICENSE] Failed to sign license:', err);
+      }
+    }
+
+    // --------------------------------------------------------
     // LICENSE RESPONSE
     // --------------------------------------------------------
 
@@ -415,7 +649,9 @@ const checkLicense = async (req, res) => {
       active: true,
 
       subscriptionStatus:
-        user.subscriptionStatus
+        user.subscriptionStatus,
+        
+      signedLicense
     });
 
   } catch (error) {
@@ -731,7 +967,9 @@ const logoutUser = async (req, res) => {
 // ============================================================
 
 module.exports = {
+  registerUser,
   loginUser,
+  getMe,
   checkLicense,
   refreshUserToken,
   logoutUser

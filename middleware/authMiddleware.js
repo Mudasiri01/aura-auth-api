@@ -15,10 +15,12 @@ const safeErr  = (...args) => { try { console.error(...args); } catch (_) {} };
  *   1. await connectDB()           — MUST succeed before any Mongoose query
  *   2. Verify Bearer token
  *   3. User.findById()             — runs AFTER connection is guaranteed
- *   4. Attach req.user, call next()
+ *   4. Check account status (suspended / disabled)
+ *   5. Attach req.user, call next()
  *
  * If the DB is unavailable the middleware returns 503 immediately.
  * If the token is invalid/expired it returns 401.
+ * If the account is suspended/disabled it returns 403.
  */
 const protect = async (req, res, next) => {
   // ── Step 1: Ensure MongoDB connection is ready ────────────────────────────
@@ -67,9 +69,27 @@ const protect = async (req, res, next) => {
         });
       }
 
+      // ── Account status check (backend enforced) ───────────────────────────
+      // Check this BEFORE subscription so we give the right error code.
+      if (mongoUser.status === 'suspended') {
+        return res.status(403).json({
+          success: false,
+          message: 'Your account has been suspended. Please contact support.',
+          code   : 'ACCOUNT_SUSPENDED',
+        });
+      }
+
+      if (mongoUser.status === 'disabled') {
+        return res.status(403).json({
+          success: false,
+          message: 'Your account has been disabled. Please contact support.',
+          code   : 'ACCOUNT_DISABLED',
+        });
+      }
+
       // ── Subscription/account check ────────────────────────────────────────
-      // Allow 'active' and 'trial' — block only 'inactive'
-      if (mongoUser.subscriptionStatus === 'inactive') {
+      // Allow 'active' and 'trial' — block only 'inactive' and 'cancelled'
+      if (mongoUser.subscriptionStatus === 'inactive' || mongoUser.subscriptionStatus === 'cancelled') {
         return res.status(403).json({
           success: false,
           message: 'Your account is inactive. Please contact your administrator to renew your license.',
@@ -84,11 +104,13 @@ const protect = async (req, res, next) => {
       // path. Attach a minimal user object so downstream handlers can read
       // req.user.id / req.user.email, but mark it so device-limit handlers
       // know they cannot access the devices[] array.
-      safeLog('[AUTH_MIDDLEWARE] Valid token but no MongoDB user \u2014 attaching decoded payload.');
+      safeLog('[AUTH_MIDDLEWARE] Valid token but no MongoDB user — attaching decoded payload.');
       req.user = {
         _id              : decoded.id,
         id               : decoded.id,
         email            : decoded.email,
+        role             : 'user',
+        status           : 'active',
         isTrial          : false,
         subscriptionStatus: 'active',
         devices          : [],

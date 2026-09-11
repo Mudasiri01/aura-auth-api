@@ -56,11 +56,15 @@ const connectDB = async () => {
   // ── Start a new connection (or wait for the one already in progress) ──────
   if (!cached.promise) {
     const opts = {
-      serverSelectionTimeoutMS : 30000,  // 30 s — gives Atlas TLS handshake time
-      connectTimeoutMS         : 30000,  // 30 s TCP connect
-      socketTimeoutMS          : 45000,  // 45 s idle socket
-      maxPoolSize              : 10,
+      serverSelectionTimeoutMS : 45000,  // 45s — extra time for slow internet / Atlas cold start
+      connectTimeoutMS         : 45000,  // 45s TCP connect
+      socketTimeoutMS          : 60000,  // 60s idle socket
+      heartbeatFrequencyMS     : 10000,  // Ping server every 10s to keep connection alive
+      maxPoolSize              : 5,      // Reduced pool for desktop app (not a server)
+      minPoolSize              : 1,      // Keep at least 1 connection alive
       retryWrites              : true,
+      family                   : 4,      // Force IPv4 — avoids slow DNS IPv6 fallback
+      bufferCommands           : false,  // Fail fast if connection drops
     };
 
     safeLog('[DB] Opening new MongoDB connection…');

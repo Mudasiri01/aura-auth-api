@@ -1,6 +1,6 @@
-# Aura SVG Studio - Advanced Admin & Auth API
+# Aura SVG Convertor - Advanced Admin & Auth API
 
-This is the extended Authentication, Licensing, and Admin Backend for the Aura SVG Studio Electron Application. 
+This is the extended Authentication, Licensing, and Admin Backend for the Aura SVG Convertor Electron Application. 
 
 ## Workflow Flow
 1. **Customer Contacts Admin** -> Pays manually.

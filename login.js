@@ -60,8 +60,8 @@ module.exports = async function handler(req, res) {
       return res.status(403).json({ error: 'This account is already activated on another computer.' });
     }
 
-    // Generate JWT — pass id and email as separate primitives
-    const token = generateToken(user.id, user.email);
+    // Generate JWT
+    const token = generateToken(user);
 
     return res.status(200).json({
       message: 'Login successful',

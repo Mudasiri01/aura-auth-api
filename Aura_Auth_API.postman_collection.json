@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "c1f1f1d0-1c1a-4b1a-9f1c-1f1c1f1d01c1",
     "name": "Aura Auth & Admin API",
-    "description": "Postman Collection for Aura SVG Studio Authentication and Admin Backend",
+    "description": "Postman Collection for Aura SVG Convertor Authentication and Admin Backend",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "item": [
