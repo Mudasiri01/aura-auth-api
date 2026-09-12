@@ -55,7 +55,25 @@ const {
 const app = express();
 
 // ======================================================
-// SECURITY
+// VERCEL URL RESTORATION
+// ======================================================
+// Vercel rewrites all requests to /index.js via vercel.json.
+// This corrupts req.url from e.g. /api/auth/login → /index.js.
+// Vercel stores the original path in x-now-route-matches as:
+//   nextPathname=%2Fapi%2Fauth%2Flogin
+// We decode and restore it here BEFORE any routes are matched.
+app.use((req, _res, next) => {
+  const routeMatches = req.headers['x-now-route-matches'];
+  if (routeMatches) {
+    const params = new URLSearchParams(routeMatches);
+    const originalPath = params.get('nextPathname');
+    if (originalPath) {
+      req.url = originalPath;
+    }
+  }
+  next();
+});
+
 // ======================================================
 
 app.use(
